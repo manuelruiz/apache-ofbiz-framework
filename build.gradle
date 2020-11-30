@@ -90,7 +90,7 @@ dependencies {
 
     // ofbiz compile libs
     compile 'org.redisson:redisson:3.11.3'
-    compile 'org.apache.ws.commons.axiom:axiom-api:1.2.20.FAE'
+    compile 'org.apache.ws.commons.axiom:axiom-api:1.2.20'
     compile 'apache-xerces:xercesImpl:2.9.1'
     compile 'com.google.zxing:core:3.2.1'
     compile 'com.googlecode.concurrentlinkedhashmap:concurrentlinkedhashmap-lru:1.0'
