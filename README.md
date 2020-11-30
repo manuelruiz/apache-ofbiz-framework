@@ -1,2 +1,2 @@
 # apache-ofbiz-framework
-Apache obiz framework
+Apache Ofbiz Framework
