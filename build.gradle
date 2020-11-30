@@ -63,12 +63,6 @@ allprojects {
 		// quitamos el jcenter porque tenemos el artifactory local que nos hace de proxy
         //jcenter()
         mavenLocal()
-		maven {
-			url "http://dev.services.fae.net:8081/artifactory/libs-release/"
-		}
-		maven {
-			url "http://dev.services.fae.net:8081/artifactory/libs-snapshot/"
-		}
 		jcenter()
     }
 }
