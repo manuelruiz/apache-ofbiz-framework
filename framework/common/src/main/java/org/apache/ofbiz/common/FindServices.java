@@ -21,16 +21,25 @@ package org.apache.ofbiz.common;
 import static org.apache.ofbiz.base.util.UtilGenerics.checkList;
 import static org.apache.ofbiz.base.util.UtilGenerics.checkMap;
 
+import java.sql.ResultSet;
 import java.sql.Timestamp;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 import java.util.TimeZone;
+import java.util.TreeMap;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 
 import org.apache.ofbiz.base.util.Debug;
 import org.apache.ofbiz.base.util.ObjectType;
@@ -50,6 +59,8 @@ import org.apache.ofbiz.entity.condition.EntityCondition;
 import org.apache.ofbiz.entity.condition.EntityConditionList;
 import org.apache.ofbiz.entity.condition.EntityFunction;
 import org.apache.ofbiz.entity.condition.EntityOperator;
+import org.apache.ofbiz.entity.datasource.GenericHelperInfo;
+import org.apache.ofbiz.entity.jdbc.SQLProcessor;
 import org.apache.ofbiz.entity.model.ModelEntity;
 import org.apache.ofbiz.entity.model.ModelField;
 import org.apache.ofbiz.entity.util.EntityListIterator;
@@ -60,6 +71,8 @@ import org.apache.ofbiz.service.DispatchContext;
 import org.apache.ofbiz.service.GenericServiceException;
 import org.apache.ofbiz.service.LocalDispatcher;
 import org.apache.ofbiz.service.ServiceUtil;
+
+//import net.fae.edi.util.FAEStringUtil;
 
 /**
  * FindServices Class
@@ -87,6 +100,30 @@ public class FindServices {
     }
 
     public FindServices() {}
+
+	public static String listToString(List<String> array, String separator) {
+		StringBuilder sb = new StringBuilder();
+		for (String str : array) {
+			sb.append(str);
+			sb.append(separator);
+		}
+		String result = "";
+		if (sb.toString().length() > separator.length())
+			result = sb.toString().substring(0, sb.length() - separator.length());
+
+		return result;
+	}
+
+	public static String stack2string(Exception e) {
+		try {
+			StringWriter sw = new StringWriter();
+			PrintWriter pw = new PrintWriter(sw);
+			e.printStackTrace(pw);
+			return "------\r\n" + sw.toString() + "------\r\n";
+		} catch (Exception e2) {
+			return "bad stack2string";
+		}
+	}
 
     /**
      * prepareField, analyse inputFields to created normalizedFields a map with field name and operator.
@@ -514,7 +551,6 @@ public class FindServices {
         }
         EntityConditionList<EntityCondition> exprList = UtilGenerics.cast(prepareResult.get("entityConditionList"));
         List<String> orderByList = checkList(prepareResult.get("orderByList"), String.class);
-
         Map<String, Object> executeResult = null;
         try {
             executeResult = dispatcher.runSync("executeFind", UtilMisc.toMap("entityName", entityName, "orderByList", orderByList,
@@ -525,11 +561,9 @@ public class FindServices {
         } catch (GenericServiceException gse) {
             return ServiceUtil.returnError(UtilProperties.getMessage(resource, "CommonFindErrorRetrieveIterator", UtilMisc.toMap("errorString", gse.getMessage()), locale));
         }
-
         if (executeResult.get("listIt") == null) {
             if (Debug.verboseOn()) Debug.logVerbose("No list iterator found for query string + [" + prepareResult.get("queryString") + "]", module);
         }
-
         Map<String, Object> results = ServiceUtil.returnSuccess();
         results.put("listIt", executeResult.get("listIt"));
         results.put("listSize", executeResult.get("listSize"));
@@ -537,6 +571,482 @@ public class FindServices {
         results.put("queryStringMap", prepareResult.get("queryStringMap"));
         return results;
     }
+    
+    /////////////////////////////////////////
+    // NEW 13/01/2019 Ticket YAJ-756-42940 //
+    /////////////////////////////////////////
+    /** getUserLoginId get user login for the context     
+     */        
+	public static String getUserLoginId(Map<String, ?> context){
+    	String userLoginId = "";
+    	try{
+    		GenericValue gv = (GenericValue) context.get("userLogin");    		
+			Map<String, Object> rmap = gv.getAllFields();
+    		userLoginId = (String) rmap.get("userLoginId");
+    	}catch (Exception e){
+    		Debug.logError("ERROR FindServices.getUserLoginId:" + e.getMessage(), module);
+    	}
+    	
+        return userLoginId;
+    }
+	
+	/** getUserGroups get gropup for user login     
+    */        
+	public static Set<String> getUserGroups(DispatchContext dctx, String userLoginId, boolean fromDispatch, boolean lUseCache){
+		//Boolean lLog = true;
+		Boolean lLog = false;
+		Set<String> userGroupsList = new LinkedHashSet<String>();
+		
+		if (fromDispatch){
+			@SuppressWarnings({ "deprecation", "rawtypes" })
+			Iterator iter = dctx.getSecurity().findUserLoginSecurityGroupByUserLoginId(userLoginId);			
+	      	try{	      		
+		      	if (iter != null) {
+		      		while(iter.hasNext()) {
+		      			GenericValue element = (GenericValue) iter.next();
+		      			String groupId = (String) element.get("groupId");
+		      			userGroupsList.add(groupId);		      	       
+		      		}
+		      	}
+	      	}catch (Exception e){
+	      		Debug.logError("------------------Exception"+e.getMessage(), module);
+	      		userGroupsList.clear();
+	      	}			
+		}
+      	       	      	      			
+      	if (!fromDispatch || userGroupsList.isEmpty()){						
+			try {
+				Delegator delegator = dctx.getDelegator();
+				List<GenericValue> groups = null;
+		        List<EntityCondition> conds = new ArrayList<>();
+		        conds.add(EntityCondition.makeCondition("userLoginId", userLoginId));
+		        EntityCondition whereCond = EntityCondition.makeCondition(conds, EntityOperator.AND);	        
+		        groups = delegator.findList("UserLoginSecurityGroup", whereCond, null, null, null, lUseCache);
+		        if (groups != null && !groups.isEmpty()) {
+		        	for (GenericValue group : groups) {		        		
+		        		String groupId = (String) group.get("groupId");		        		
+						userGroupsList.add(groupId);
+		        	}
+		        }
+		    } catch (GenericEntityException e) {
+		        //throw new CmsException("Could not retrieve users with page role. Page: " + page.getName() + " Role:" + role.toString(), e);
+		    	Debug.logError("ERROR FindServices.getUserGroups:" + e.getMessage(), module);
+		    }		
+      	}			
+      	      	
+      	if (lLog){
+      		for (String s : userGroupsList) {
+      			Debug.logInfo("================ group for user "+ userLoginId +": " + s, module);
+      		}
+      	}
+      	
+        return userGroupsList;
+    }		
+    
+    /** getComponentName get plugin name from passed inputFields    
+     */   
+    public static String getComponentName(Map<String, ?> inputFields){
+    	String componentName = "";
+    	try{
+    		for (Entry<String, ?> entry : inputFields.entrySet()) {
+    			if (entry.getKey().equalsIgnoreCase("componentName")){
+    				componentName = (String) entry.getValue();
+    			}
+    		}    		    		    		
+    	}catch (Exception e){
+    		Debug.logError("ERROR FindServices.getUserLoginId:" + e.getMessage(), module);
+    	}
+    	
+        return componentName;
+    }        
+    
+    /** getDefaultCondition get condition to be overlaped or created for user, plugin and entity
+     *  from table entity_condition    
+     */      
+	public static Map<String,Map<String,String>> getDefaultCondition( String userLoginId, String componentName, String entityName, Delegator delegator, Boolean lUseCache){
+    	Boolean lLog = false;
+    	Map<String,Map<String,String>> conditionsMap = new HashMap<String,Map<String,String>>();
+    	if (lLog){
+    		Debug.logInfo("------------------------------ Searching userLoginId: "+ userLoginId + " componentName: "+ componentName + " entityName:" + entityName, module);
+    	}
+    	    	               	
+    	// Admin has the power
+    	if (!userLoginId.equalsIgnoreCase("admin")){
+    		try{    			   			  			
+    			List<GenericValue> resultEntityList = null;
+    			List<EntityCondition> conds = new ArrayList<>();
+    			conds.add(EntityCondition.makeCondition("cndPlugin", componentName));
+    			conds.add(EntityCondition.makeCondition(EntityFunction.UPPER_FIELD("cndUser"), EntityOperator.EQUALS, userLoginId.toUpperCase()));
+    			conds.add(EntityCondition.makeCondition("cndEntity", entityName));
+    			conds.add(EntityCondition.makeCondition("cndDll", "SELECT"));
+    			EntityCondition whereCond = EntityCondition.makeCondition(conds, EntityOperator.AND);
+    			
+    			try{
+    				resultEntityList = delegator.findList("entityCondition", whereCond, null, null, null, lUseCache);
+    			} catch (GenericEntityException ex) {
+    				resultEntityList = null;    				    				
+    				Debug.logError("getDefaultCondition: "+ ex.getMessage() + " Stack:" + FindServices.stack2string(ex), module); 
+    			}
+    			
+    			if (resultEntityList != null && !resultEntityList.isEmpty()) {
+	    			int i = 0;
+	    			for (GenericValue resultEntity : resultEntityList) {
+	            		i = i + 1;
+	            		//Debug.logInfo("------------------------------ Line:" + i, module); 
+	            		String cndField   = (String) resultEntity.get("cndField");	          			            		
+	            		String cndValue   = (String) resultEntity.get("cndValue");
+	            		String cndCondition = (String) resultEntity.get("cndCondition"); 	            		
+	            		if ( (cndCondition == null) || (cndCondition != null && cndCondition.isEmpty())){
+	            			cndCondition = "LIKE";
+	            		}
+	            		if (conditionsMap.get(cndField) == null){
+	            			Map<String,String> fieldConditionMap = new HashMap<String,String>();
+	            			fieldConditionMap.put(cndValue, cndCondition);	            			
+	            			conditionsMap.put(cndField,fieldConditionMap);
+	            		}else{
+	            			Map<String,String> fieldConditionMap = new TreeMap<String,String>(String.CASE_INSENSITIVE_ORDER);
+	            			fieldConditionMap = conditionsMap.get(cndField);	            			
+	            			fieldConditionMap.put(cndValue, cndCondition);
+	            			conditionsMap.put(cndField,fieldConditionMap);
+	            		}
+	
+	            		//Debug.logInfo("------------------------------ Condition:"+ i + " cndField: "+ cndField + " cndValue:" + cndValue, module); 
+	            	}
+    			}
+    			
+    		}catch (Exception e){    			
+    			Debug.logError("------------------------------ getDefaultCondition ERROR: "+ e.getMessage(), module); 
+    		}
+    	}   
+    	if (lLog){
+	    	for (Map.Entry<String,Map<String,String>> entry : conditionsMap.entrySet()) {    		
+	    		Debug.logInfo("------------------------------ getDefaultCondition Map:" + entry.getKey() +" --> "+entry.getValue().toString(), module);    		
+	    	}
+    	}
+    	
+    	return conditionsMap;
+    }    
+    
+    /** getDefaultCondition get condition to be overlaped or created for user, plugin and entity
+     *  from table entity_condition    
+     */      
+	public static Map<String,Map<String,String>> getDefaultConditionBySql( String userLoginId, String componentName, String entityName, Delegator delegator){
+    	Boolean lLog = false;
+    	Map<String,Map<String,String>> conditionsMap = new HashMap<String,Map<String,String>>();
+    	if (lLog){
+    		Debug.logInfo("------------------------------ Searching userLoginId: "+ userLoginId + " componentName: "+ componentName + " entityName:" + entityName, module);
+    	}
+    	    	               	
+    	// Admin has the power
+    	if (!userLoginId.equalsIgnoreCase("admin")){
+    		try{    			   			  			
+    			
+	    		GenericHelperInfo helperInfo = delegator.getGroupHelperInfo("org.apache.ofbiz");
+	    		SQLProcessor sqlproc = new SQLProcessor(delegator,helperInfo);
+	    		String sqlStr = "select cnd_Field,cnd_Value,cnd_condition "+    				
+	    				        "  from entity_condition "+
+	    				        " where cnd_plugin ='"+ componentName + "' " +
+	    				        "   and cnd_user ='"+ userLoginId + "' " +
+	    				        "   and cnd_entity ='" + entityName + "' "+
+	    				        "   and cnd_dll ='SELECT'";
+	    		
+	    		//Debug.logInfo("------------------------------ getDefaultCondition SQL:"+sqlStr, module);    		
+    			    		
+    			sqlproc.prepareStatement(sqlStr); 
+    			ResultSet rs1 = sqlproc.executeQuery();
+    			    			    			
+    			int i = 0;
+            	while (rs1.next()) {
+            		i = i + 1;
+            		//Debug.logInfo("------------------------------ Line:" + i, module); 
+            		String cndField   = rs1.getString(1);
+          			            		
+            		String cndValue = rs1.getString(2);
+            		String cndCondition = rs1.getString(3);  	            		
+            		if ((cndCondition == null) || (cndCondition != null && cndCondition.isEmpty())){
+            			cndCondition = "LIKE";
+            		}
+            		if (conditionsMap.get(cndField) == null){
+            			Map<String,String> fieldConditionMap = new HashMap<String,String>();
+            			fieldConditionMap.put(cndValue, cndCondition);	            			
+            			conditionsMap.put(cndField,fieldConditionMap);
+            		}else{
+            			Map<String,String> fieldConditionMap = new TreeMap<String,String>(String.CASE_INSENSITIVE_ORDER);
+            			fieldConditionMap = conditionsMap.get(cndField);	            			
+            			fieldConditionMap.put(cndValue, cndCondition);
+            			conditionsMap.put(cndField,fieldConditionMap);
+            		}
+
+            		//Debug.logInfo("------------------------------ Condition:"+ i + " cndField: "+ cndField + " cndValue:" + cndValue, module); 
+            	}
+            	rs1.close();
+            	sqlproc.close();
+    			
+    		}catch (Exception e){    			
+    			Debug.logError("------------------------------ getDefaultConditionBySql ERROR: "+ e.getMessage(), module); 
+    		}
+    	}   
+    	if (lLog){
+	    	for (Map.Entry<String,Map<String,String>> entry : conditionsMap.entrySet()) {    		
+	    		Debug.logError("------------------------------ getDefaultConditionBySql user: " + userLoginId + " Map:" + entry.getKey() +" --> "+entry.getValue().toString(), module);    		
+	    	}
+    	}
+    	
+    	return conditionsMap;
+    }       
+	
+	public static List<String> getFieldNames(Map<String,FieldMetadata> allFieldMap){
+		List<String> result = new ArrayList<String>();
+		
+		try{
+			for (Map.Entry<String, FieldMetadata> entry : allFieldMap.entrySet()) {
+				result.add(entry.getKey());
+			}
+		}catch (Exception e){
+			Debug.logError("------------------------------ getFieldNames error:" + e.getMessage(), module);    			
+		}
+		
+		return result;
+	}
+		    
+    /** changeListEntityCondition overlap or create entity conditions for the search form     
+     */      
+    public static void changeListEntityCondition(String userLoginId, List<EntityCondition> tmpList, Map<String,Map<String,String>> conditionsMap, String entityName, Delegator delegator, Boolean lDeleteOldQuery){
+    	Boolean lLog = false;
+    	//Boolean lLog = true;
+    	//boolean lDeleteOldQuery = false;
+    	String allrecords = "_allrecords";
+    	
+    	// String types for postgres
+    	final String[] FIELDTYPES = new String[] {"id", "id-long", "id-vlong", "indicator", "very-short",
+												  "short-varchar", "long-varchar", "very-long", "comment",
+												  "description", "name", "value", "credit-card-number",
+												  "credit-card-date", "email", "url", "id-ne",
+												  "id-long-ne", "id-vlong-ne", "tel-number"};    	
+    	
+    	for (Map.Entry<String, Map<String,String>> entry : conditionsMap.entrySet()) {    		
+    		String cndField   = entry.getKey();  
+    		
+    		// Get data of entity    	    	
+	    	Map<String,FieldMetadata> allFieldMap = new TreeMap<String,FieldMetadata>(String.CASE_INSENSITIVE_ORDER);
+	        String table_name = getEntityData(userLoginId, entityName, delegator, allFieldMap); 
+	        //  
+	        
+	        if (lLog){
+	        	Debug.logInfo("------------------------------ changeListEntityCondition0 user: " + userLoginId + " cndField: "+ cndField + " table_name: "+ table_name + " entityName: " + entityName + " allFieldMap:" + allFieldMap.size(), module); 
+	        }
+	        
+	        FieldMetadata fieldMetadata = allFieldMap.get(cndField);			
+    		if (fieldMetadata != null){      			    			    			
+    	        String cndFieldEntity = fieldMetadata.getFieldNameEntity();    		
+    			String cndFieldTable = fieldMetadata.getFieldNameBBDD();      
+    			String fieldTypeEntity = fieldMetadata.getFieldTypeEntity();
+    			
+    			if (lLog){
+    				Debug.logInfo("------------------------------ changeListEntityCondition user: " + userLoginId + " fieldTypeEntity: " + fieldTypeEntity, module);
+    			}
+    			
+    			boolean isMatched = Arrays.asList(FIELDTYPES).stream().anyMatch(fieldTypeEntity::equalsIgnoreCase);
+    			if (isMatched){
+		    		Map<String,String> cndValueMap = entry.getValue();
+		    		if (lLog){
+		    			Debug.logInfo("------------------------------ changeListEntityCondition user: " + userLoginId + " cndField: "+ cndField + " cndFieldEntity: "+ cndFieldEntity + " cndFieldTable:" + cndFieldTable, module);
+		    		}
+		    		
+		    		// Eliminamos todo que tenga cfgValue
+		    		if (lDeleteOldQuery){    		    						    	
+						// Pass 1 - collect delete candidates
+				        List<EntityCondition> deleteCandidates = new ArrayList<>();
+						for (EntityCondition entityCondition : tmpList) {							
+							// try for entityName
+							//if (lLog){
+							//	Debug.logInfo("------------------------------ EntityCondition try delete by cndFieldEntity:" + entityCondition + " Search:"+ cndFieldEntity, module);
+							//}							
+						    //if (entityCondition.toString().toUpperCase().contains(cndFieldEntity.toUpperCase())){ //cndField.toUpperCase())) {
+						    //   deleteCandidates.add(entityCondition);
+						    //}
+							// try for tableFieldName
+							if (lLog){
+								Debug.logInfo("------------------------------ EntityCondition user: " + userLoginId + " try delete by cndFieldTable:" + entityCondition + " Search:"+ cndFieldTable, module);
+							}							
+						    if (entityCondition.toString().toUpperCase().contains(cndFieldTable.toUpperCase())){ //cndField.toUpperCase())) {
+						       deleteCandidates.add(entityCondition);
+						    }						    
+						 }
+						 // Pass 2 - delete
+						 for (EntityCondition deleteCandidate : deleteCandidates) {
+							 tmpList.remove(deleteCandidate);
+							 if (lLog){
+								 Debug.logInfo("+++++++++++++++++++++++++++changeListEntityCondition user: " + userLoginId + " Removed:" + deleteCandidate, module);
+							 }
+						 }
+						 // RemoveAll
+						 //tmpList.removeAll(deleteCandidates);
+		    		 }
+					 
+		    		 // Check for all records
+		    		 Boolean lAllrecords = false;
+		    		 for (Map.Entry<String, String> entryValues : cndValueMap.entrySet()) {
+		    			 if (entryValues.getKey().equalsIgnoreCase(allrecords)){
+		    				 lAllrecords = true;
+		    				 break;
+		    			 }
+		    		 }
+		    		 // Si no hay allrecords
+		    		 if (!lAllrecords){
+			    		 // Adding default conditions
+						 String sqlString = "";
+						 for (Map.Entry<String, String> entryValues : cndValueMap.entrySet()) {
+							    if (lLog){
+							    	Debug.logInfo("+++++++++++++++++++++++++++changeListEntityCondition user: " + userLoginId + " Key : " + entryValues.getKey() + " Value : " + entryValues.getValue(), module);
+							    }
+					            String cndValue = entryValues.getKey();
+					            String cndCondition = entryValues.getValue();
+								if( (sqlString == null) || (sqlString != null && sqlString.isEmpty()) ) {
+					            	 if (cndCondition.equalsIgnoreCase("EQUAL")){
+					            		 sqlString = cndFieldTable + " = '" + cndValue +"'";
+					            	 }else{
+					            		 sqlString = cndFieldTable + " LIKE '%" + cndValue +"%'";			            		 			            	 
+					            	 }
+								}else{
+									 if (cndCondition.equalsIgnoreCase("EQUAL")){
+										 sqlString = sqlString + " or " + cndFieldTable + " = '" + cndValue + "'";
+					            	 }else{			            			
+					            		 sqlString = sqlString + " or " + cndFieldTable + " LIKE '%" + cndValue +"%'";
+					            	 }							 							 							 
+								}
+					     }
+						 // Add () if more than one condition
+						 
+						 boolean sqlStatus = ((sqlString == null) || (sqlString != null && sqlString.isEmpty()));
+						 if (!sqlStatus && cndValueMap.entrySet().size() > 1){
+							 sqlString = "(" + sqlString + ")";
+						 }
+						 EntityCondition newEntityCondition = EntityCondition.makeConditionWhere(sqlString);
+						 tmpList.add(newEntityCondition);
+						 if (lLog){
+							 Debug.logInfo("+++++++++++++++++++++++++++changeListEntityCondition user: " + userLoginId + " Added:" + newEntityCondition, module);
+						 }
+		    		 }else{		    			
+						 Debug.logInfo("HINT: ChangeListEntityCondition user: " + userLoginId + "lAllrecords found for field:" + cndFieldTable, module);			
+						 //Debug.logTiming("HINT: ChangeListEntityCondition user: " + userLoginId + " lAllrecords found for field:" + cndFieldTable, module);						 
+		    		 }
+    			 }else{
+    				 Debug.logInfo("------------------------------ changeListEntityCondition user: " + userLoginId + " Field: " +  cndField + " NOT MATCH TYPE IN PERMITTED TYPES: " +  
+        					 FindServices.listToString(Arrays.asList(FIELDTYPES), ","), module); 	
+    				 //Debug.logTiming("------------------------------ changeListEntityCondition user: " + userLoginId + " Field: " +  cndField + " NOT MATCH TYPE IN PERMITTED TYPES: " +  
+        			 //		 FAEStringUtil.listToString(Arrays.asList(FIELDTYPES), ","), module);     				 
+    			 }
+    		 }else{
+    			 Debug.logInfo("------------------------------ changeListEntityCondition user: " + userLoginId + " Field: " +  cndField + " NOT FOUND IN METADATA FOR ENTITYNAME " + entityName + ": " + 
+    					 FindServices.listToString(getFieldNames(allFieldMap), ","), module);
+    			 //Debug.logTiming("------------------------------ changeListEntityCondition user: " + userLoginId + " Field: " +  cndField + " NOT FOUND IN METADATA FOR ENTITYNAME " + entityName + ": " + 
+    			 //		 FAEStringUtil.listToString(getFieldNames(allFieldMap), ","), module);    			 
+    		 }
+    	 }
+    	     	
+    	 if (lLog){
+	    	 Debug.logInfo("=== changeListEntityCondition List conditions user: " + userLoginId + ":", module);
+			 for (EntityCondition temp : tmpList) {
+			 	Debug.logInfo("+++++++++++++++++++++++++++ " + temp.toString(), module);			
+			 }
+    	 }
+    }
+    
+    static class FieldMetadata{
+
+    	private String  fieldNameEntity;
+    	private String  fieldNameBBDD;
+		private String  fieldTypeEntity;
+    	
+		public String getFieldNameEntity() {
+			return fieldNameEntity;
+		}
+		public void setFieldNameEntity(String fieldNameEntity) {
+			this.fieldNameEntity = fieldNameEntity;
+		}
+
+		public String getFieldNameBBDD() {
+			return fieldNameBBDD;
+		}
+		public void setFieldNameBBDD(String fieldNameBBDD) {
+			this.fieldNameBBDD = fieldNameBBDD;
+		}
+		public String getFieldTypeEntity() {
+			return fieldTypeEntity;
+		}
+		public void setFieldTypeEntity(String fieldTypeEntity) {
+			this.fieldTypeEntity = fieldTypeEntity;
+		}
+    	
+    	@Override
+		public String toString() {
+			return "FieldMetadata2 [fieldNameEntity=" + fieldNameEntity + ", fieldNameBBDD=" + fieldNameBBDD
+					+ ", fieldTypeEntity=" + fieldTypeEntity + "]";
+		}    	    	    
+    	
+    }    
+        
+    public static String getEntityData(String userLoginId, String entityName, Delegator delegator, Map<String,FieldMetadata> allFieldMap){    
+    	Boolean lLog = false;
+    	ModelEntity m = delegator.getModelEntity(entityName);
+        GenericHelperInfo helperInfo = delegator.getGroupHelperInfo("org.apache.ofbiz");
+        String tableName = m.getTableName(helperInfo.getHelperBaseName());
+        
+        if (lLog){
+        	Debug.logInfo("================ user: " + userLoginId + " TABLENAME entityName: "+ entityName + " tableName:" + tableName, module);
+        }
+
+        List<String> allFieldNamesList = m.getAllFieldNames();
+        for (String fieldNameEntity : allFieldNamesList) {
+        	String fieldNameBBDD = m.getColNameOrAlias(fieldNameEntity);
+        	ModelField mf = m.getField(fieldNameEntity);
+        	String fieldTypeEntity = mf.getType();
+        	
+        	FieldMetadata fieldMetadata = new FieldMetadata();
+        	fieldMetadata.setFieldNameEntity(fieldNameEntity);
+        	fieldMetadata.setFieldNameBBDD(fieldNameBBDD);
+        	fieldMetadata.setFieldTypeEntity(fieldTypeEntity);
+        	allFieldMap.put(fieldNameEntity, fieldMetadata);
+        	
+        	if (lLog){
+        		Debug.logInfo("     ================ user: " + userLoginId + " FieldNameEntity:" + fieldNameEntity + " fieldNameBBDD:" + fieldNameBBDD + " FieldTypeEntity:"+fieldTypeEntity, module);
+        	}
+        }        
+        
+        return tableName;
+    }    
+    
+    public static String getEntityDataByDatabase(String userLoginId, String entityName, Delegator delegator, Map<String,FieldMetadata> allFieldMap){    
+    	Boolean lLog = false;
+    	ModelEntity m = delegator.getModelEntity(entityName);
+        GenericHelperInfo helperInfo = delegator.getGroupHelperInfo("org.apache.ofbiz");
+        String tableName = m.getTableName(helperInfo.getHelperBaseName());
+        if (lLog){
+        	Debug.logInfo("================ getEntityDataByDatabase user: " + userLoginId + " TABLENAME entityName: "+ entityName + " tableName:" + tableName, module);
+        }
+
+        List<String> allFieldNamesList = m.getAllFieldNames();
+        for (String fieldNameEntity : allFieldNamesList) {
+        	String fieldNameBBDD = m.getColNameOrAlias(fieldNameEntity);
+        	ModelField mf = m.getField(fieldNameEntity);
+        	String fieldTypeEntity = mf.getType();
+        	
+        	FieldMetadata fieldMetadata = new FieldMetadata();
+        	fieldMetadata.setFieldNameEntity(fieldNameEntity);
+        	fieldMetadata.setFieldNameBBDD(fieldNameBBDD);
+        	fieldMetadata.setFieldTypeEntity(fieldTypeEntity);
+        	allFieldMap.put(fieldNameBBDD, fieldMetadata);
+        	if (lLog){
+        		Debug.logInfo("     ================ user: " + userLoginId + " FieldNameEntity:" + fieldNameEntity + " fieldNameBBDD:" + fieldNameBBDD + " FieldTypeEntity:"+fieldTypeEntity, module);
+        	}
+        }        
+        
+        return tableName;
+    }       
+    /////////////////////////////////////////////
+    // FIN NEW 13/01/2019 Ticket YAJ-756-42940 //
+    /////////////////////////////////////////////
 
     /**
      * prepareFind
@@ -545,7 +1055,9 @@ public class FindServices {
      * to indicate their purpose in formulating an SQL query statement.
      */
     public static Map<String, Object> prepareFind(DispatchContext dctx, Map<String, ?> context) {
-        String entityName = (String) context.get("entityName");
+    	//Boolean lLog = true;
+    	Boolean lLog = false;
+        String entityName = (String) context.get("entityName");                      
         Delegator delegator = dctx.getDelegator();
         String orderBy = (String) context.get("orderBy");
         Map<String, ?> inputFields = checkMap(context.get("inputFields"), String.class, Object.class); // Input
@@ -592,6 +1104,58 @@ public class FindServices {
                 }
             }
         }
+        
+        /////////////////////////////////////////
+        // NEW 13/01/2019 Ticket YAJ-756-42940 //
+        /////////////////////////////////////////
+        String userLoginId   = getUserLoginId(context);
+        String componentName = getComponentName(inputFields);        
+        if (lLog){
+	        for(EntityCondition entityCondition : tmpList){
+	        	Debug.logInfo("-------INIT CONDITION----------------------- user: " + userLoginId + " entityCondition: "+ entityCondition + " for user " + userLoginId, module);         	
+	        }
+        }                	
+        // groups
+        Set<String> groupSet = getUserGroups(dctx, userLoginId, true, true);
+        List<EntityCondition> newtmpList = new ArrayList<EntityCondition>();
+        Map<String,Map<String,String>> conditionsMap = new HashMap<String,Map<String,String>>();
+        for(String group : groupSet){	        
+        	conditionsMap = getDefaultCondition( group, componentName, entityName, dctx.getDelegator(), true);
+        	if (!conditionsMap.isEmpty()){
+        		 changeListEntityCondition(userLoginId, newtmpList, conditionsMap, entityName, dctx.getDelegator(), false);
+        	}
+        	if (lLog){
+	        	Debug.logInfo("-------GROUP----------------------- prepareFind group: "+ group + " for user " + userLoginId + " count:" + conditionsMap.size(), module); 
+	        }        	
+        }
+        // user
+        conditionsMap = getDefaultCondition( userLoginId, componentName, entityName, dctx.getDelegator(), true);
+        if (!conditionsMap.isEmpty()){
+        	changeListEntityCondition(userLoginId, newtmpList, conditionsMap, entityName, dctx.getDelegator(), true);
+        }
+    	if (lLog){
+        	Debug.logInfo("-------USER----------------------- prepareFind for user " + userLoginId + " count:" + conditionsMap.size(), module); 
+        }        
+        // add to existing conditions
+        if (!newtmpList.isEmpty()){
+        	Debug.logInfo("Adding find where clause user: " + userLoginId + " for EntityName " + entityName + " : " + newtmpList, module);
+        	//Debug.logTiming("Adding find where clause user: " + userLoginId + " for EntityName " + entityName + " : " + newtmpList, module);
+        }    	
+        for(EntityCondition entityCondition : newtmpList){
+        	if (lLog){
+        		Debug.logInfo("-------ADD CONDITION TO EXISTING----------------------- user: " + userLoginId + " entityCondition: "+ entityCondition + " for user " + userLoginId, module);
+        	}
+        	tmpList.add(entityCondition);
+        }
+        // Show condition
+        if (lLog){
+	        for(EntityCondition entityCondition : tmpList){
+	        	Debug.logInfo("-------FINAL CONDITION----------------------- user: " + userLoginId + " entityCondition: "+ entityCondition + " for user " + userLoginId, module);         	
+	        }
+        }
+        /////////////////////////////////////////////
+        // FIN NEW 13/01/2019 Ticket YAJ-756-42940 //
+        /////////////////////////////////////////////
 
         EntityConditionList<EntityCondition> exprList = null;
         if (tmpList.size() > 0) {
@@ -602,10 +1166,10 @@ public class FindServices {
         if (UtilValidate.isNotEmpty(orderBy)) {
             orderByList = StringUtil.split(orderBy,"|");
         }
-
+        
         Map<String, Object> results = ServiceUtil.returnSuccess();
         queryStringMap.put("noConditionFind", noConditionFind);
-        String queryString = UtilHttp.urlEncodeArgs(queryStringMap);
+        String queryString = UtilHttp.urlEncodeArgs(queryStringMap);    
         results.put("queryString", queryString);
         results.put("queryStringMap", queryStringMap);
         results.put("orderByList", orderByList);
@@ -652,7 +1216,6 @@ public class FindServices {
         } catch (GenericEntityException e) {
             return ServiceUtil.returnError(UtilProperties.getMessage(resource, "CommonFindErrorRunning", UtilMisc.toMap("entityName", entityName, "errorString", e.getMessage()), locale));
         }
-
         Map<String, Object> results = ServiceUtil.returnSuccess();
         results.put("listIt", listIt);
         results.put("listSize", listSize);
